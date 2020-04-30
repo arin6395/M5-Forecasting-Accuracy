@@ -3,6 +3,8 @@ import numpy as np
 import json
 import gc
 import lightgbm as lgb
+from datetime import datetime, timedelta
+
 
 # Basic Project Settings
 h = 28
@@ -91,16 +93,52 @@ for col in df_new.columns:
 
 
 # Feature engineering
-df_train = df_new[df_new['date'] < '25-04-2016']
-df_predict = df_new[df_new['date'] >= '25-04-2016']
+df_new['is_weekend'] = np.where(
+    (df_new['wday'] == 1) | (df_new['wday'] == 2), 1, 0)
+df_new['mday'] = getattr(df_new['date'].dt, "day")
+df_new['is_month_start'] = np.where(df_new['mday'] <= 9, 1, 0)
+df_new['is_month_mid'] = np.where(
+    (df_new['mday'] >= 10) & (df_new['mday'] <= 19), 1, 0)
+df_new['is_month_end'] = np.where(df_new['mday'] >= 20, 1, 0)
+df_new['quarter'] = getattr(df_new['date'].dt, "quarter")
+df_new['week'] = getattr(df_new['date'].dt, "weekofyear")
+
+# df_train = df_new[df_new['date'] < '25-04-2016']
+# df_predict = df_new[df_new['date'] >= '25-04-2016']
+
 
 useless_cols = ["id", "date", "sales", "d", "wm_yr_wk"]
+fday = datetime(2016, 4, 25)
+# df_new = pd.concat([df_train, df_predict], sort=False)
 
-df_temp = df_predict.drop(useless_cols, axis=1)
-model = lgb.Booster(model_file='model.lgb')
+df_new = df_new[(df_new['date'] >= fday - timedelta(days=60))]
+gc.collect()
+print(df_new.shape)
+# print(df_new.info)
+lags = [1, 7, 14, 28]
+lagcols = [f"lag_{lag}" for lag in lags]
+model = lgb.Booster(model_file='model_tweedie_5.lgb')
+for x in range(0, 28):
+    curday = fday + timedelta(days=x)
+    df_temp = df_new[(df_new['date'] >= curday - timedelta(days=57))
+                     & (df_new['date'] <= curday)]
+    for lag, lagcol in zip(lags, lagcols):
+        df_temp[lagcol] = df_temp[["id", "sales"]].groupby("id")[
+            "sales"].shift(lag)
 
-predictions = model.predict(df_temp)
-print(predictions)
-df_predict['sales'] = predictions
+    windows = [7, 14, 28]
+    for window in windows:
+        for lag, lagcol in zip(lags, lagcols):
+            df_temp[f"rmean_{lag}_{window}"] = df_temp[["id", lagcol]].groupby(
+                "id")[lagcol].transform(lambda x: x.rolling(window).mean())
 
+    df_temp_predict = df_temp[df_temp['date'] == curday]
+    print(x, curday)
+    df_temp_predict.drop(useless_cols, axis=1, inplace=True)
+    temp_prediction = model.predict(df_temp_predict)
+    print(temp_prediction)
+    df_new.loc[df_new['date'] == curday, 'sales'] = temp_prediction
+
+df_predict = df_new[df_new['date'] >= '25-04-2016']
+# df_predict.drop(useless_cols, axis=1, inplace=True)
 df_predict.to_csv('predicted.csv')

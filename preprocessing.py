@@ -1,7 +1,6 @@
 # preprocessing
 import pandas as pd
 import numpy as np
-import json
 import gc
 import lightgbm as lgb
 
@@ -46,7 +45,7 @@ dtype.update({col: "category" for col in catcols if col != "id"})
 df = pd.read_csv("sales_train_validation.csv",
                  usecols=catcols + numcols, dtype=dtype, nrows=None)
 for day in range(tr_last + 1, tr_last + 28 + 1):
-    df[f"d_{day}"] = np.nan
+  df[f"d_{day}"] = np.nan
 # print(df.shape)
 # print(df.info())
 
@@ -84,9 +83,9 @@ df_new = df_new.merge(
 # Different Tables have been merged.
 
 for col in df_new.columns:
-    if str(df_new[col].dtype) == 'category':
-        df_new[col] = df_new[col].cat.codes.astype("int16")
-        df_new[col] -= df_new[col].min()
+  if str(df_new[col].dtype) == 'category':
+    df_new[col] = df_new[col].cat.codes.astype("int16")
+    df_new[col] -= df_new[col].min()
 
 # print(df_new.info())
 # print(df_new.shape)
@@ -94,32 +93,46 @@ for col in df_new.columns:
 
 # Feature engineering
 
+# time features
 df_new['is_weekend'] = np.where(
-    (df_new['wday'] == 1) | (df_new['wday'] == 2), 1, 0)
-df_new['mday'] = getattr(df_new['date'], "day")
-df_new['is_month_start'] = np.where(df_new['mday'] <= 9, 1, 0)
+    (df_new['wday'] == 1) | (df_new['wday'] == 2), 1, 0).astype("int16")
+df_new['mday'] = getattr(df_new['date'].dt, "day").astype("int16")
+df_new['is_month_start'] = np.where(df_new['mday'] <= 9, 1, 0).astype("int16")
 df_new['is_month_mid'] = np.where(
-    (df_new['mday'] >= 10) & (df_new['mday'] <= 19), 1, 0)
-df_new['is_month_end'] = np.where(df_new['mday'] >= 20, 1, 0)
-df_new['quarter'] = getattr(df_new['date'], "quarter")
-df_new['week'] = getattr(df_new['date'], "weekofyear")
-print(df_new.columns)
+    (df_new['mday'] >= 10) & (df_new['mday'] <= 19), 1, 0).astype("int16")
+df_new['is_month_end'] = np.where(df_new['mday'] >= 20, 1, 0).astype("int16")
+df_new['quarter'] = getattr(df_new['date'].dt, "quarter").astype("int16")
+df_new['week'] = getattr(df_new['date'].dt, "weekofyear").astype("int16")
+# df_new['is_event'] = np.where(df_new[])
 
-print(df_new.head(20))
 
 df_train = df_new[df_new['date'] < '25-04-2016']
 df_predict = df_new[df_new['date'] >= '25-04-2016']
 # print(df_train.shape)
 # print(df_predict.shape)
 
-categorical_feats = ['item_id', 'dept_id', 'store_id', 'cat_id', 'state_id'] + \
-    ["event_name_1", "event_name_2", "event_type_1", "event_type_2"]
+# Lag features
+lags = [1, 7, 14, 28]
+lagcols = [f"lag_{lag}" for lag in lags]
+for lag, lagcol in zip(lags, lagcols):
+  df_train[lagcol] = df_train[["id", "sales"]].groupby("id")[
+      "sales"].shift(lag).astype('float16')
+
+windows = [7, 14, 28]
+for window in windows:
+  for lag, lagcol in zip(lags, lagcols):
+    df_train[f"rmean_{lag}_{window}"] = df_train[["id", lagcol]].groupby(
+        "id")[lagcol].transform(lambda x: x.rolling(window).mean()).astype('float16')
+
+
+categorical_feats = ['item_id', 'dept_id', 'store_id', 'cat_id', 'state_id'] + ["event_name_1", "event_name_2",
+                                                                                "event_type_1", "event_type_2"] + ['is_month_end', 'is_month_end', 'is_month_mid', 'is_weekend']
 useless_cols = ["id", "date", "sales", "d", "wm_yr_wk", "weekday"]
 
 # Features created
 
+print(df_train.shape)
 
-'''
 # Starting Training models
 
 # trying the LGB Model
@@ -141,22 +154,27 @@ gc.collect()
 
 
 params = {
-    "objective": "poisson",
+    "objective": "tweedie",
+    'tweedie_variance_power': 1.1,
     "metric": "rmse",
-    "force_row_wise": True,
-    "learning_rate": 0.075,
+    "learning_rate": 0.07,
     #    "sub_feature" : 0.8,
-    "sub_row": 0.75,
-    "bagging_freq": 1,
+    "force_row_wise": True,
+    "sub_row": 0.8,
+    "bagging_freq": 10,
     "lambda_l2": 0.1,
     #    "nthread" : 4
-    "metric": ["rmse"],
     'verbosity': 1,
-    'num_iterations': 1200,
-    'num_leaves': 128,
-    "min_data_in_leaf": 100,
+    'num_iterations': 1500,
+    'num_leaves': 1023,
+    "min_data_in_leaf": 2047,
+    # 'device': 'gpu',
+    # 'gpu_platform_id': 0,
+    # 'gpu_device_id': 0,
+    # 'save_binary': True,
+    # 'gpu_use_dp': False
 }
 
-m_lgb = lgb.train(params, train_data, valid_sets=[test_data], verbose_eval=20)
-m_lgb.save_model("model.lgb")
-'''
+m_lgb = lgb.train(params, train_data, valid_sets=[
+                  test_data], verbose_eval=50, early_stopping_rounds=200)
+m_lgb.save_model("model_tweedie_5.lgb")
