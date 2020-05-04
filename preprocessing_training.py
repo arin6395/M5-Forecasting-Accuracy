@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import gc
 import lightgbm as lgb
+import pickle
 
 # Basic Project Settings
 h = 28
@@ -17,6 +18,17 @@ cal_dtypes = {"event_name_1": "category", "event_name_2": "category", "event_typ
 df_cal = pd.read_csv("calendar.csv", dtype=cal_dtypes)
 # converting date to datetime
 df_cal['date'] = pd.to_datetime(df_cal['date'])
+
+
+# Creating feature for upcoming events
+# df_cal['is_event'] = np.where((df_cal['event_name_1'].notnull()) | (
+#     df_cal['event_name_2'].notnull()), 1, 0).astype('int8')
+# f_lags = [1]
+# for lag in f_lags:
+#   df_cal[f"n_event_in_{lag}"] = df_cal[['date', 'is_event']
+#                                        ]['is_event'].transform(lambda x: x.rolling(lag).sum()).shift(-1 * lag)
+df_cal['event_1_tmr'] = df_cal['event_name_1'].shift(-1)
+df_cal['event_2_tmr'] = df_cal['event_name_2'].shift(-1)
 
 # dropping weekday as wday is redundant
 dropcols = ['weekday']
@@ -82,6 +94,7 @@ df_new = df_new.merge(
 # Till now we have cleaned and proccessed the data in different tables
 # Different Tables have been merged.
 
+
 for col in df_new.columns:
   if str(df_new[col].dtype) == 'category':
     df_new[col] = df_new[col].cat.codes.astype("int16")
@@ -97,26 +110,27 @@ for col in df_new.columns:
 df_new['is_weekend'] = np.where(
     (df_new['wday'] == 1) | (df_new['wday'] == 2), 1, 0).astype("int16")
 df_new['mday'] = getattr(df_new['date'].dt, "day").astype("int16")
-df_new['is_month_start'] = np.where(df_new['mday'] <= 9, 1, 0).astype("int16")
+df_new['is_month_start'] = np.where(df_new['mday'] <= 7, 1, 0).astype("int16")
 df_new['is_month_mid'] = np.where(
-    (df_new['mday'] >= 10) & (df_new['mday'] <= 19), 1, 0).astype("int16")
-df_new['is_month_end'] = np.where(df_new['mday'] >= 20, 1, 0).astype("int16")
+    (df_new['mday'] >= 8) & (df_new['mday'] <= 21), 1, 0).astype("int16")
+df_new['is_month_end'] = np.where(df_new['mday'] >= 22, 1, 0).astype("int16")
 df_new['quarter'] = getattr(df_new['date'].dt, "quarter").astype("int16")
 df_new['week'] = getattr(df_new['date'].dt, "weekofyear").astype("int16")
-# df_new['is_event'] = np.where(df_new[])
 
 
 df_train = df_new[df_new['date'] < '25-04-2016']
 df_predict = df_new[df_new['date'] >= '25-04-2016']
+
+
 # print(df_train.shape)
 # print(df_predict.shape)
 
 # Lag features
-lags = [1, 7, 14, 28]
+lags = [1, 7, 14, 28, 56]
 lagcols = [f"lag_{lag}" for lag in lags]
 for lag, lagcol in zip(lags, lagcols):
   df_train[lagcol] = df_train[["id", "sales"]].groupby("id")[
-      "sales"].shift(lag).astype('float16')
+      "sales"].shift(lag)
 
 windows = [7, 14, 28]
 for window in windows:
@@ -132,6 +146,7 @@ useless_cols = ["id", "date", "sales", "d", "wm_yr_wk", "weekday"]
 # Features created
 
 print(df_train.shape)
+
 
 # Starting Training models
 
@@ -157,7 +172,7 @@ params = {
     "objective": "tweedie",
     'tweedie_variance_power': 1.1,
     "metric": "rmse",
-    "learning_rate": 0.07,
+    "learning_rate": 0.061,
     #    "sub_feature" : 0.8,
     "force_row_wise": True,
     "sub_row": 0.8,
@@ -175,6 +190,11 @@ params = {
     # 'gpu_use_dp': False
 }
 
+
+print("Start Training")
 m_lgb = lgb.train(params, train_data, valid_sets=[
                   test_data], verbose_eval=50, early_stopping_rounds=200)
-m_lgb.save_model("model_tweedie_5.lgb")
+
+
+with open('model_tweedie_8.pkl', 'wb') as fout:
+  pickle.dump(m_lgb, fout)
