@@ -5,6 +5,38 @@ import gc
 import lightgbm as lgb
 import pickle
 
+
+def reduce_mem_usage(df, verbose=True):
+  numerics = ['int16', 'int32', 'int64', 'float16', 'float32', 'float64']
+  start_mem = df.memory_usage().sum() / 1024**2
+  for col in df.columns:
+    col_type = df[col].dtypes
+    if col_type in numerics:
+      c_min = df[col].min()
+      c_max = df[col].max()
+      if str(col_type)[:3] == 'int':
+        if c_min > np.iinfo(np.int8).min and c_max < np.iinfo(np.int8).max:
+          df[col] = df[col].astype(np.int8)
+        elif c_min > np.iinfo(np.int16).min and c_max < np.iinfo(np.int16).max:
+          df[col] = df[col].astype(np.int16)
+        elif c_min > np.iinfo(np.int32).min and c_max < np.iinfo(np.int32).max:
+          df[col] = df[col].astype(np.int32)
+        elif c_min > np.iinfo(np.int64).min and c_max < np.iinfo(np.int64).max:
+          df[col] = df[col].astype(np.int64)
+      else:
+        if c_min > np.finfo(np.float16).min and c_max < np.finfo(np.float16).max:
+          df[col] = df[col].astype(np.float16)
+        elif c_min > np.finfo(np.float32).min and c_max < np.finfo(np.float32).max:
+          df[col] = df[col].astype(np.float32)
+        else:
+          df[col] = df[col].astype(np.float64)
+  end_mem = df.memory_usage().sum() / 1024**2
+  if verbose:
+    print('Mem. usage decreased to {:5.2f} Mb ({:.1f}% reduction)'.format(
+        end_mem, 100 * (start_mem - end_mem) / start_mem))
+  return df
+
+
 # Basic Project Settings
 h = 28
 max_lags = 57
@@ -14,7 +46,7 @@ tr_last = 1913
 
 cal_dtypes = {"event_name_1": "category", "event_name_2": "category", "event_type_1": "category",
               "event_type_2": "category", "weekday": "category", 'wm_yr_wk': 'int16', "wday": "int16",
-              "month": "int16", "year": "int16", "snap_CA": "float32", 'snap_TX': 'float32', 'snap_WI': 'float32'}
+              "month": "int16", "year": "int16", "snap_CA": "category", 'snap_TX': 'category', 'snap_WI': 'category'}
 df_cal = pd.read_csv("calendar.csv", dtype=cal_dtypes)
 # converting date to datetime
 df_cal['date'] = pd.to_datetime(df_cal['date'])
@@ -52,7 +84,7 @@ is_train = True
 start_day = max(1 if is_train else tr_last - max_lags, 1)
 numcols = [f"d_{day}" for day in range(start_day, tr_last + 1)]
 catcols = ['id', 'item_id', 'dept_id', 'store_id', 'cat_id', 'state_id']
-dtype = {numcol: "float32" for numcol in numcols}
+dtype = {numcol: "int32" for numcol in numcols}
 dtype.update({col: "category" for col in catcols if col != "id"})
 df = pd.read_csv("sales_train_validation.csv",
                  usecols=catcols + numcols, dtype=dtype, nrows=None)
@@ -118,34 +150,56 @@ df_new['quarter'] = getattr(df_new['date'].dt, "quarter").astype("int16")
 df_new['week'] = getattr(df_new['date'].dt, "weekofyear").astype("int16")
 
 
+df_new = reduce_mem_usage(df_new)
+
+
 df_train = df_new[df_new['date'] < '25-04-2016']
-df_predict = df_new[df_new['date'] >= '25-04-2016']
+
+
+# print(df_train.shape)
+# print("id grouping")
+# print(df_train[["id", "sales"]].groupby("id")['sales'].shift(1).shape)
+# print("store grouping")
+# print(df_train[["store_id", "sales"]].groupby(
+#     "store_id")['sales'].shift(1).shape)
+# print("item grouping")
+# print(df_train[["item_id", "sales"]].groupby(
+#     "item_id")['sales'].shift(1).shape)
 
 
 # print(df_train.shape)
 # print(df_predict.shape)
 
 # Lag features
-lags = [1, 7, 14, 28, 56]
-lagcols = [f"lag_{lag}" for lag in lags]
-for lag, lagcol in zip(lags, lagcols):
-  df_train[lagcol] = df_train[["id", "sales"]].groupby("id")[
-      "sales"].shift(lag)
 
-windows = [7, 14, 28]
+# id grouping
+lags = [1, 7, 15, 30, 60, 90, 180, 360]
+lagcols = [f"lag_id_{lag}" for lag in lags]
+for lag, lagcol in zip(lags, lagcols):
+  df_train.loc[:, lagcol] = df_train[["id", "sales"]].groupby("id")[
+      "sales"].shift(lag).astype('float32')
+
+  windows = [7, 15, 30, 90]
 for window in windows:
   for lag, lagcol in zip(lags, lagcols):
-    df_train[f"rmean_{lag}_{window}"] = df_train[["id", lagcol]].groupby(
-        "id")[lagcol].transform(lambda x: x.rolling(window).mean()).astype('float16')
+    df_train.loc[:, f"rmean_id_{lag}_{window}"] = df_train[["id", lagcol]].groupby(
+        "id")[lagcol].transform(lambda x: x.rolling(window).mean()).astype('float32')
+
+# growth features
 
 
-categorical_feats = ['item_id', 'dept_id', 'store_id', 'cat_id', 'state_id'] + ["event_name_1", "event_name_2",
-                                                                                "event_type_1", "event_type_2"] + ['is_month_end', 'is_month_end', 'is_month_mid', 'is_weekend']
+categorical_feats = ['item_id', 'dept_id', 'store_id', 'cat_id', 'state_id', 'snap_WI', 'snap_TX', 'snap_CA'] + ["event_name_1", "event_name_2",
+                                                                                                                 "event_type_1", "event_type_2"] + ['is_month_end', 'is_month_end', 'is_month_mid', 'is_weekend']
 useless_cols = ["id", "date", "sales", "d", "wm_yr_wk", "weekday"]
 
 # Features created
-
+df_train = reduce_mem_usage(df_train)
 print(df_train.shape)
+
+
+# print(df_train[["store_id",'date',"sales",'lag_store_1']].head(20))
+
+# print(df_train[["item_id",'date',"sales",'lag_item_1']].head(20))
 
 
 # Starting Training models
@@ -172,13 +226,13 @@ params = {
     "objective": "tweedie",
     'tweedie_variance_power': 1.1,
     "metric": "rmse",
-    "learning_rate": 0.061,
-    #    "sub_feature" : 0.8,
+    "learning_rate": 0.05,
+    #"sub_feature" : 0.8,
     "force_row_wise": True,
     "sub_row": 0.8,
     "bagging_freq": 10,
     "lambda_l2": 0.1,
-    #    "nthread" : 4
+    #"nthread" : 4
     'verbosity': 1,
     'num_iterations': 1500,
     'num_leaves': 1023,
@@ -193,8 +247,8 @@ params = {
 
 print("Start Training")
 m_lgb = lgb.train(params, train_data, valid_sets=[
-                  test_data], verbose_eval=50, early_stopping_rounds=200)
+                  test_data], verbose_eval=100, early_stopping_rounds=200)
 
 
-with open('model_tweedie_8.pkl', 'wb') as fout:
+with open('model_tweedie_11.pkl', 'wb') as fout:
   pickle.dump(m_lgb, fout)
