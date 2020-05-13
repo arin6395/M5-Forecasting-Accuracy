@@ -191,7 +191,8 @@ for window in windows:
 
 # growth features
 growths = {
-    '7': [30, 90, 180, 360],
+    '7': [30, 60, 90, 180, 360],
+    '15':[30, 90, 180, 360]
     '30': [90, 180, 360],
     '90': [180, 360]
 }
@@ -248,7 +249,7 @@ params = {
     "objective": "tweedie",
     'tweedie_variance_power': 1.1,
     "metric": "rmse",
-    "learning_rate": 0.05,
+    "learning_rate": 0.04,
     #"sub_feature" : 0.8,
     "force_row_wise": True,
     "sub_row": 0.8,
